@@ -4,12 +4,10 @@
 from werkzeug.local import Local
 from django.db import models
 from django.utils.translation import ugettext_lazy as _
-from django.db.models import Q
 from django.shortcuts import redirect
 from django.forms import ModelForm
 from django.http.response import HttpResponseForbidden
 from django.core.exceptions import ValidationError
-
 
 from common.utils import get_logger
 from .utils import current_org, set_current_org, set_to_root_org
@@ -20,7 +18,7 @@ tl = Local()
 
 __all__ = [
     'OrgManager', 'OrgViewGenericMixin', 'OrgModelMixin', 'OrgModelForm',
-    'RootOrgViewMixin',
+    'RootOrgViewMixin', 'OrgMembershipSerializerMixin', 'OrgMembershipModelViewSetMixin'
 ]
 
 
@@ -148,14 +146,12 @@ class OrgModelMixin(models.Model):
 
 class OrgViewGenericMixin:
     def dispatch(self, request, *args, **kwargs):
-        print("Current org: {}".format(current_org))
         if not current_org:
             return redirect('orgs:switch-a-org')
 
         if not current_org.can_admin_by(request.user):
             print("{} cannot admin {}".format(request.user, current_org))
             if request.user.is_org_admin:
-                print("Is org admin")
                 return redirect('orgs:switch-a-org')
             return HttpResponseForbidden()
         else:
@@ -179,3 +175,29 @@ class OrgModelForm(ModelForm):
                 continue
             model = field.queryset.model
             field.queryset = model.objects.all()
+
+
+class OrgMembershipSerializerMixin:
+    def run_validation(self, initial_data=None):
+        initial_data['organization'] = str(self.context['org'].id)
+        return super().run_validation(initial_data)
+
+
+class OrgMembershipModelViewSetMixin:
+    org = None
+    membership_class = None
+    lookup_field = 'user'
+    lookup_url_kwarg = 'user_id'
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def dispatch(self, request, *args, **kwargs):
+        self.org = Organization.objects.get(pk=kwargs.get('org_id'))
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['org'] = self.org
+        return context
+
+    def get_queryset(self):
+        return self.membership_class.objects.filter(organization=self.org)

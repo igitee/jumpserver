@@ -48,7 +48,7 @@ class AssetCreateForm(OrgModelForm):
                 'root or other NOPASSWD sudo privilege user existed in asset,'
                 'If asset is windows or other set any one, more see admin user left menu'
             ),
-            # 'platform': _("* required Must set exact system platform, Windows, Linux ..."),
+            'platform': _("Windows 2016 RDP protocol is different, If is window 2016, set it"),
             'domain': _("If your have some network not connect with each other, you can set domain")
         }
 
@@ -88,7 +88,7 @@ class AssetUpdateForm(OrgModelForm):
                 'root or other NOPASSWD sudo privilege user existed in asset,'
                 'If asset is windows or other set any one, more see admin user left menu'
             ),
-            # 'platform': _("* required Must set exact system platform, Windows, Linux ..."),
+            'platform': _("Windows 2016 RDP protocol is different, If is window 2016, set it"),
             'domain': _("If your have some network not connect with each other, you can set domain")
         }
 
@@ -142,14 +142,14 @@ class AssetBulkUpdateForm(OrgModelForm):
                         if k in changed_fields}
         assets = cleaned_data.pop('assets')
         labels = cleaned_data.pop('labels', [])
-        nodes = cleaned_data.pop('nodes')
+        nodes = cleaned_data.pop('nodes', None)
         assets = Asset.objects.filter(id__in=[asset.id for asset in assets])
         assets.update(**cleaned_data)
 
         if labels:
-            for label in labels:
-                label.assets.add(*tuple(assets))
+            for asset in assets:
+                asset.labels.set(labels)
         if nodes:
-            for node in nodes:
-                node.assets.add(*tuple(assets))
+            for asset in assets:
+                asset.nodes.set(nodes)
         return assets

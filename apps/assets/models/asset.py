@@ -15,7 +15,7 @@ from django.core.cache import cache
 
 from ..const import ASSET_ADMIN_CONN_CACHE_KEY
 from .user import AdminUser, SystemUser
-from orgs.mixins import OrgModelMixin,OrgManager
+from orgs.mixins import OrgModelMixin, OrgManager
 
 __all__ = ['Asset']
 logger = logging.getLogger(__name__)
@@ -34,7 +34,8 @@ def default_cluster():
 def default_node():
     try:
         from .node import Node
-        return Node.root()
+        root = Node.root()
+        return root
     except:
         return None
 
@@ -144,6 +145,13 @@ class Asset(OrgModelMixin):
             return True, ''
         return False, warning
 
+    def support_ansible(self):
+        if self.platform in ("Windows", "Windows2016", "Other"):
+            return False
+        if self.protocol != 'ssh':
+            return False
+        return True
+
     def is_unixlike(self):
         if self.platform not in ("Windows", "Windows2016"):
             return True
@@ -218,6 +226,16 @@ class Asset(OrgModelMixin):
                 'become': self.admin_user.become_info,
             }
 
+    def as_node(self):
+        from .node import Node
+        fake_node = Node()
+        fake_node.id = self.id
+        fake_node.key = self.id
+        fake_node.value = self.hostname
+        fake_node.asset = self
+        fake_node.is_node = False
+        return fake_node
+
     def _to_secret_json(self):
         """
         Ansible use it create inventory, First using asset user,
@@ -246,7 +264,8 @@ class Asset(OrgModelMixin):
         from random import seed, choice
         import forgery_py
         from django.db import IntegrityError
-
+        from .node import Node
+        nodes = list(Node.objects.all())
         seed()
         for i in range(count):
             ip = [str(i) for i in random.sample(range(255), 4)]
@@ -257,6 +276,11 @@ class Asset(OrgModelMixin):
                         created_by='Fake')
             try:
                 asset.save()
+                if nodes and len(nodes) > 3:
+                    _nodes = random.sample(nodes, 3)
+                else:
+                    _nodes = [Node.default_node()]
+                asset.nodes.set(_nodes)
                 asset.system_users = [choice(SystemUser.objects.all()) for i in range(3)]
                 logger.debug('Generate fake asset : %s' % asset.ip)
             except IntegrityError:

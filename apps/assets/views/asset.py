@@ -45,10 +45,7 @@ class AssetListView(AdminUserRequiredMixin, TemplateView):
     template_name = 'assets/asset_list.html'
 
     def get_context_data(self, **kwargs):
-        if current_org.is_default():
-            Node.default_node()
-        else:
-            Node.root()
+        Node.root()
         context = {
             'app': _('Assets'),
             'action': _('Asset list'),
@@ -219,6 +216,7 @@ class AssetExportView(LoginRequiredMixin, View):
             return HttpResponse('Json object not valid', status=400)
 
         if not assets_id:
+            print(node_id)
             node = get_object_or_none(Node, id=node_id) if node_id else Node.root()
             assets = node.get_all_assets()
             for asset in assets:
@@ -280,7 +278,8 @@ class BulkImportAssetView(AdminUserRequiredMixin, JSONResponseMixin, FormView):
                         v = ''
                 elif k == 'domain':
                     v = get_object_or_none(Domain, name=v)
-
+                elif k == 'platform':
+                    v = v.lower().capitalize()
                 if v != '':
                     asset_dict[k] = v
 

@@ -12,19 +12,21 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from common.utils import get_logger, get_request_ip
+from common.permissions import IsOrgAdminOrAppUser
+from orgs.mixins import RootOrgViewMixin
 from ..serializers import UserSerializer
 from ..tasks import write_login_log_async
 from ..models import User, LoginLog
-from ..utils import check_user_valid, generate_token, \
-    check_otp_code, increase_login_failed_count, is_block_login, clean_failed_count
-from common.permissions import IsOrgAdminOrAppUser
+from ..utils import check_user_valid, check_otp_code, \
+    increase_login_failed_count, is_block_login, \
+    clean_failed_count
 from ..hands import Asset, SystemUser
 
 
 logger = get_logger(__name__)
 
 
-class UserAuthApi(APIView):
+class UserAuthApi(RootOrgViewMixin, APIView):
     permission_classes = (AllowAny,)
     serializer_class = UserSerializer
 
@@ -41,14 +43,30 @@ class UserAuthApi(APIView):
 
         user, msg = self.check_user_valid(request)
         if not user:
+            username = request.data.get('username', '')
+            exist = User.objects.filter(username=username).first()
+            reason = LoginLog.REASON_PASSWORD if exist else LoginLog.REASON_NOT_EXIST
             data = {
-                'username': request.data.get('username', ''),
+                'username': username,
                 'mfa': LoginLog.MFA_UNKNOWN,
-                'reason': LoginLog.REASON_PASSWORD,
+                'reason': reason,
                 'status': False
             }
             self.write_login_log(request, data)
             increase_login_failed_count(username, ip)
+            return Response({'msg': msg}, status=401)
+
+        if user.password_has_expired:
+            data = {
+                'username': user.username,
+                'mfa': int(user.otp_enabled),
+                'reason': LoginLog.REASON_PASSWORD_EXPIRED,
+                'status': False
+            }
+            self.write_login_log(request, data)
+            msg = _("The user {} password has expired, please update.".format(
+                user.username))
+            logger.info(msg)
             return Response({'msg': msg}, status=401)
 
         if not user.otp_enabled:
@@ -61,12 +79,9 @@ class UserAuthApi(APIView):
             self.write_login_log(request, data)
             # 登陆成功，清除原来的缓存计数
             clean_failed_count(username, ip)
-            token = generate_token(request, user)
+            token = user.create_bearer_token(request)
             return Response(
-                {
-                    'token': token,
-                    'user': self.serializer_class(user).data
-                }
+                {'token': token, 'user': self.serializer_class(user).data}
             )
 
         seed = uuid.uuid4().hex
@@ -108,11 +123,10 @@ class UserAuthApi(APIView):
             'user_agent': user_agent,
         }
         data.update(tmp_data)
-
         write_login_log_async.delay(**data)
 
 
-class UserConnectionTokenApi(APIView):
+class UserConnectionTokenApi(RootOrgViewMixin, APIView):
     permission_classes = (IsOrgAdminOrAppUser,)
 
     def post(self, request):
@@ -170,13 +184,13 @@ class UserToken(APIView):
             user = request.user
             msg = None
         if user:
-            token = generate_token(request, user)
+            token = user.create_bearer_token(request)
             return Response({'Token': token, 'Keyword': 'Bearer'}, status=200)
         else:
             return Response({'error': msg}, status=406)
 
 
-class UserOtpAuthApi(APIView):
+class UserOtpAuthApi(RootOrgViewMixin, APIView):
     permission_classes = (AllowAny,)
     serializer_class = UserSerializer
 
@@ -208,7 +222,7 @@ class UserOtpAuthApi(APIView):
             'status': True
         }
         self.write_login_log(request, data)
-        token = generate_token(request, user)
+        token = user.create_bearer_token(request)
         return Response(
             {
                 'token': token,

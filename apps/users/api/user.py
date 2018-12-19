@@ -3,19 +3,22 @@ import uuid
 
 from django.core.cache import cache
 from django.contrib.auth import logout
+from django.utils.translation import ugettext as _
 
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_bulk import BulkModelViewSet
+from rest_framework.pagination import LimitOffsetPagination
 
+from common.permissions import IsOrgAdmin, IsCurrentUserOrReadOnly, \
+    IsOrgAdminOrAppUser
+from common.mixins import IDInFilterMixin
+from common.utils import get_logger
+from orgs.utils import current_org
 from ..serializers import UserSerializer, UserPKUpdateSerializer, \
     UserUpdateGroupSerializer, ChangeUserPasswordSerializer
 from ..models import User
-from orgs.utils import current_org
-from common.permissions import IsOrgAdmin, IsCurrentUserOrReadOnly, IsOrgAdminOrAppUser
-from common.mixins import IDInFilterMixin
-from common.utils import get_logger
 
 
 logger = get_logger(__name__)
@@ -27,15 +30,15 @@ __all__ = [
 
 
 class UserViewSet(IDInFilterMixin, BulkModelViewSet):
-    queryset = User.objects.exclude(role="App")
+    filter_fields = ('username', 'email', 'name', 'id')
+    search_fields = filter_fields
+    queryset = User.objects.exclude(role=User.ROLE_APP)
     serializer_class = UserSerializer
     permission_classes = (IsOrgAdmin,)
-    filter_fields = ('username', 'email', 'name', 'id')
+    pagination_class = LimitOffsetPagination
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        org_users = current_org.get_org_users()
-        queryset = queryset.filter(id__in=org_users)
+        queryset = current_org.get_org_users()
         return queryset
 
     def get_permissions(self):
@@ -132,7 +135,7 @@ class UserResetOTPApi(generics.RetrieveAPIView):
         user = self.get_object() if kwargs.get('pk') else request.user
         if user == request.user:
             msg = _("Could not reset self otp, use profile reset instead")
-            return Response({"msg": msg}, status=401)
+            return Response({"error": msg}, status=401)
         if user.otp_enabled and user.otp_secret_key:
             user.otp_secret_key = ''
             user.save()

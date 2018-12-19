@@ -3,8 +3,9 @@
 from django import forms
 from django.utils.translation import gettext_lazy as _
 
-from ..models import AdminUser, SystemUser
 from common.utils import validate_ssh_private_key, ssh_pubkey_gen, get_logger
+from orgs.mixins import OrgModelForm
+from ..models import AdminUser, SystemUser
 
 logger = get_logger(__file__)
 __all__ = [
@@ -85,7 +86,7 @@ class AdminUserForm(PasswordAndKeyAuthForm):
         }
 
 
-class SystemUserForm(PasswordAndKeyAuthForm):
+class SystemUserForm(OrgModelForm, PasswordAndKeyAuthForm):
     # Admin user assets define, let user select, save it in form not in view
     auto_generate_key = forms.BooleanField(initial=True, required=False)
 
@@ -136,17 +137,20 @@ class SystemUserForm(PasswordAndKeyAuthForm):
         fields = [
             'name', 'username', 'protocol', 'auto_generate_key',
             'password', 'private_key_file', 'auto_push', 'sudo',
-            'comment', 'shell', 'priority', 'login_mode',
+            'comment', 'shell', 'priority', 'login_mode', 'cmd_filters',
         ]
         widgets = {
             'name': forms.TextInput(attrs={'placeholder': _('Name')}),
             'username': forms.TextInput(attrs={'placeholder': _('Username')}),
+            'cmd_filters': forms.SelectMultiple(attrs={
+                'class': 'select2', 'data-placeholder': _('Command filter')
+            }),
         }
         help_texts = {
             'name': '* required',
             'username': '* required',
             'auto_push': _('Auto push system user to asset'),
-            'priority': _('High level will be using login asset as default, '
+            'priority': _('1-100, High level will be using login asset as default, '
                           'if user was granted more than 2 system user'),
             'login_mode': _('If you choose manual login mode, you do not '
                             'need to fill in the username and password.')

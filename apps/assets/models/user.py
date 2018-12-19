@@ -3,11 +3,11 @@
 #
 
 import logging
-import uuid
 
 from django.core.cache import cache
 from django.db import models
 from django.utils.translation import ugettext_lazy as _
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 from common.utils import get_signer
 from ..const import SYSTEM_USER_CONN_CACHE_KEY
@@ -112,12 +112,14 @@ class SystemUser(AssetUser):
 
     nodes = models.ManyToManyField('assets.Node', blank=True, verbose_name=_("Nodes"))
     assets = models.ManyToManyField('assets.Asset', blank=True, verbose_name=_("Assets"))
-    priority = models.IntegerField(default=10, verbose_name=_("Priority"))
+    priority = models.IntegerField(default=20, verbose_name=_("Priority"),
+                                   validators=[MinValueValidator(1), MaxValueValidator(100)])
     protocol = models.CharField(max_length=16, choices=PROTOCOL_CHOICES, default='ssh', verbose_name=_('Protocol'))
     auto_push = models.BooleanField(default=True, verbose_name=_('Auto push'))
     sudo = models.TextField(default='/bin/whoami', verbose_name=_('Sudo'))
     shell = models.CharField(max_length=64,  default='/bin/bash', verbose_name=_('Shell'))
     login_mode = models.CharField(choices=LOGIN_MODE_CHOICES, default=AUTO_LOGIN, max_length=10, verbose_name=_('Login mode'))
+    cmd_filters = models.ManyToManyField('CommandFilter', related_name='system_users', verbose_name=_("Command filter"), blank=True)
 
     cache_key = "__SYSTEM_USER_CACHED_{}"
 
@@ -162,6 +164,23 @@ class SystemUser(AssetUser):
 
     def expire_cache(self):
         cache.delete(self.cache_key.format(self.id))
+
+    @property
+    def cmd_filter_rules(self):
+        from .cmd_filter import CommandFilterRule
+        rules = CommandFilterRule.objects.filter(
+            filter__in=self.cmd_filters.all()
+        ).distinct()
+        return rules
+
+    def is_command_can_run(self, command):
+        for rule in self.cmd_filter_rules:
+            action, matched_cmd = rule.match(command)
+            if action == rule.ACTION_ALLOW:
+                return True, None
+            elif action == rule.ACTION_DENY:
+                return False, matched_cmd
+        return True, None
 
     @classmethod
     def get_system_user_by_id_or_cached(cls, sid):
