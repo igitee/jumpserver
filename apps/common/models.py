@@ -47,6 +47,8 @@ class Setting(models.Model):
             value = self.value
             if self.encrypted:
                 value = signer.unsign(value)
+            if not value:
+                return None
             value = json.loads(value)
             return value
         except json.JSONDecodeError:

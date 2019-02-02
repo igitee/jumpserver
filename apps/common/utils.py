@@ -391,6 +391,8 @@ def get_request_ip(request):
 def get_command_storage_setting():
     default = settings.DEFAULT_TERMINAL_COMMAND_STORAGE
     value = settings.TERMINAL_COMMAND_STORAGE
+    if not value:
+        return default
     value.update(default)
     return value
 
@@ -398,26 +400,10 @@ def get_command_storage_setting():
 def get_replay_storage_setting():
     default = settings.DEFAULT_TERMINAL_REPLAY_STORAGE
     value = settings.TERMINAL_REPLAY_STORAGE
+    if not value:
+        return default
     value.update(default)
     return value
-
-
-class TeeObj:
-    origin_stdout = sys.stdout
-
-    def __init__(self, file_obj):
-        self.file_obj = file_obj
-
-    def write(self, msg):
-        self.origin_stdout.write(msg)
-        self.file_obj.write(msg.replace('*', ''))
-
-    def flush(self):
-        self.origin_stdout.flush()
-        self.file_obj.flush()
-
-    def close(self):
-        self.file_obj.close()
 
 
 def with_cache(func):

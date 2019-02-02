@@ -19,6 +19,7 @@ from orgs.utils import current_org
 from ..serializers import UserSerializer, UserPKUpdateSerializer, \
     UserUpdateGroupSerializer, ChangeUserPasswordSerializer
 from ..models import User
+from ..signals import post_user_create
 
 
 logger = get_logger(__name__)
@@ -37,6 +38,10 @@ class UserViewSet(IDInFilterMixin, BulkModelViewSet):
     permission_classes = (IsOrgAdmin,)
     pagination_class = LimitOffsetPagination
 
+    def perform_create(self, serializer):
+        user = serializer.save()
+        post_user_create.send(self.__class__, user=user)
+
     def get_queryset(self):
         queryset = current_org.get_org_users()
         return queryset
@@ -45,6 +50,9 @@ class UserViewSet(IDInFilterMixin, BulkModelViewSet):
         if self.action == "retrieve":
             self.permission_classes = (IsOrgAdminOrAppUser,)
         return super().get_permissions()
+
+    def allow_bulk_destroy(self, qs, filtered):
+        return qs.count() != filtered.count()
 
 
 class UserChangePasswordApi(generics.RetrieveUpdateAPIView):
