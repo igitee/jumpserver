@@ -41,7 +41,10 @@ def run_ansible_task(tid, callback=None, **kwargs):
 @shared_task
 def run_command_execution(cid, **kwargs):
     execution = get_object_or_none(CommandExecution, id=cid)
-    return execution.run()
+    if execution:
+        execution.run()
+    else:
+        logger.error("Not found the execution id: {}".format(cid))
 
 
 @shared_task
@@ -77,6 +80,8 @@ def clean_celery_tasks_period():
     command = "find %s -mtime +%s -name '*.log' -type f -exec rm -f {} \\;" % (
         settings.CELERY_LOG_DIR, expire_days
     )
+    subprocess.call(command, shell=True)
+    command = "echo > {}".format(os.path.join(settings.LOG_DIR, 'celery.log'))
     subprocess.call(command, shell=True)
 
 

@@ -18,8 +18,8 @@ BOOTSTRAP_TOKEN:
 
 # Session expiration setting, Default 24 hour, Also set expired on on browser close
 # 浏览器Session过期时间，默认24小时, 也可以设置浏览器关闭则过期
-# SESSION_COOKIE_AGE: 3600 * 24
-# SESSION_EXPIRE_AT_BROWSER_CLOSE: False
+# SESSION_COOKIE_AGE: 86400
+# SESSION_EXPIRE_AT_BROWSER_CLOSE: false
 
 # Database setting, Support sqlite3, mysql, postgres ....
 # 数据库设置
@@ -61,6 +61,14 @@ REDIS_PORT: 6379
 # AUTH_OPENID_REALM_NAME: realm-name
 # AUTH_OPENID_CLIENT_ID: client-id
 # AUTH_OPENID_CLIENT_SECRET: client-secret
+#
+# Use Radius authorization
+# 使用Radius来认证
+# AUTH_RADIUS: false
+# RADIUS_SERVER: localhost
+# RADIUS_PORT: 1812
+# RADIUS_SECRET: 
+
 
 # OTP settings
 # OTP/MFA 配置

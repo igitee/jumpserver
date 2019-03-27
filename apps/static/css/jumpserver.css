@@ -131,10 +131,18 @@ table.dataTable tbody td.selected td i.text-navy {
     margin-right: 5px !important;
 }
 
+.m-m-m{
+    margin-left: 50px !important;
+}
+
 .m-10 {
     margin: 10px !important;
 }
-
+.f-i-l-e{
+    /*float: left;*/
+    margin-left: 1000px !important;
+    /*padding-left: 1000px !important;*/
+}
 .m-t-10 {
     margin-top: 10px !important;
 }
@@ -441,4 +449,8 @@ div.dataTables_wrapper div.dataTables_filter {
 .form-group .required .control-label:after {
     content:"*";
     color:red;
+}
+
+#tree-refresh .fa-refresh {
+    font: normal normal normal 14px/1 FontAwesome !important;
 }

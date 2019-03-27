@@ -29,6 +29,7 @@ class Node(OrgModelMixin):
 
     class Meta:
         verbose_name = _("Node")
+        ordering = ['key']
 
     def __str__(self):
         return self.full_value
@@ -134,10 +135,10 @@ class Node(OrgModelMixin):
         count = max(values) + 1 if values else 1
         return '{} {}'.format(name, count)
 
-    def create_child(self, value):
+    def create_child(self, value, _id=None):
         with transaction.atomic():
             child_key = self.get_next_child_key()
-            child = self.__class__.objects.create(key=child_key, value=value)
+            child = self.__class__.objects.create(id=_id, key=child_key, value=value)
             return child
 
     def get_children(self, with_self=False):
@@ -275,7 +276,8 @@ class Node(OrgModelMixin):
     @classmethod
     def default_node(cls):
         defaults = {'value': 'Default'}
-        return cls.objects.get_or_create(defaults=defaults, key='1')
+        obj, created = cls.objects.get_or_create(defaults=defaults, key='1')
+        return obj
 
     def as_tree_node(self):
         from common.tree import TreeNode

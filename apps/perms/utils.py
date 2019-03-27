@@ -1,10 +1,15 @@
 # coding: utf-8
 
 from __future__ import absolute_import, unicode_literals
+import uuid
 from collections import defaultdict
+from django.utils import timezone
 from django.db.models import Q
+from django.core.cache import cache
+from django.conf import settings
 
 from common.utils import get_logger
+from common.tree import TreeNode
 from .models import AssetPermission
 from .hands import Node
 
@@ -96,10 +101,20 @@ class AssetPermissionUtil:
         "SystemUser": get_node_permissions,
     }
 
-    def __init__(self, obj):
+    CACHE_KEY = '_ASSET_PERM_CACHE_{}_{}'
+    CACHE_META_KEY = '_ASSET_PERM_META_KEY_{}'
+    CACHE_TIME = settings.ASSETS_PERM_CACHE_TIME
+    CACHE_POLICY_MAP = (('0', 'never'), ('1', 'using'), ('2', 'refresh'))
+
+    def __init__(self, obj, cache_policy='0'):
         self.object = obj
+        self.obj_id = str(obj.id)
         self._permissions = None
         self._assets = None
+        self.cache_policy = cache_policy
+        self.node_key = self.CACHE_KEY.format(self.obj_id, 'NODES_WITH_ASSETS')
+        self.asset_key = self.CACHE_KEY.format(self.obj_id, 'ASSETS')
+        self.system_key = self.CACHE_KEY.format(self.obj_id, 'SYSTEM_USER')
 
     @property
     def permissions(self):
@@ -140,7 +155,7 @@ class AssetPermissionUtil:
                 )
         return assets
 
-    def get_assets(self):
+    def get_assets_without_cache(self):
         if self._assets:
             return self._assets
         assets = self.get_assets_direct()
@@ -154,24 +169,119 @@ class AssetPermissionUtil:
         self._assets = assets
         return self._assets
 
-    def get_nodes_with_assets(self):
+    def get_assets_from_cache(self):
+        cached = cache.get(self.asset_key)
+        if not cached:
+            self.update_cache()
+            cached = cache.get(self.asset_key)
+        return cached
+
+    def get_assets(self):
+        if self.CACHE_TIME <= 0 or self.cache_policy in self.CACHE_POLICY_MAP[1]:
+            return self.get_assets_from_cache()
+        elif self.cache_policy in self.CACHE_POLICY_MAP[2]:
+            self.expire_cache()
+            return self.get_assets_from_cache()
+        else:
+            self.expire_cache()
+            return self.get_assets_without_cache()
+
+    def get_nodes_with_assets_without_cache(self):
         """
         返回节点并且包含资产
         {"node": {"assets": set("system_user")}}
         :return:
         """
-        assets = self.get_assets()
+        assets = self.get_assets_without_cache()
         tree = GenerateTree()
         for asset, system_users in assets.items():
             tree.add_asset(asset, system_users)
         return tree.get_nodes()
 
-    def get_system_users(self):
+    def get_nodes_with_assets_from_cache(self):
+        cached = cache.get(self.node_key)
+        if not cached:
+            self.update_cache()
+            cached = cache.get(self.node_key)
+        return cached
+
+    def get_nodes_with_assets(self):
+        if self.CACHE_TIME <= 0 or self.cache_policy in self.CACHE_POLICY_MAP[1]:
+            return self.get_nodes_with_assets_from_cache()
+        elif self.cache_policy in self.CACHE_POLICY_MAP[2]:
+            self.expire_cache()
+            return self.get_nodes_with_assets_from_cache()
+        else:
+            return self.get_nodes_with_assets_without_cache()
+
+    def get_system_user_without_cache(self):
         system_users = set()
         permissions = self.permissions.prefetch_related('system_users')
         for perm in permissions:
             system_users.update(perm.system_users.all())
         return system_users
+
+    def get_system_user_from_cache(self):
+        cached = cache.get(self.system_key)
+        if not cached:
+            self.update_cache()
+            cached = cache.get(self.system_key)
+        return cached
+
+    def get_system_users(self):
+        if self.CACHE_TIME <= 0 or self.cache_policy in self.CACHE_POLICY_MAP[1]:
+            return self.get_system_user_from_cache()
+        elif self.cache_policy in self.CACHE_POLICY_MAP[2]:
+            self.expire_cache()
+            return self.get_system_user_from_cache()
+        else:
+            return self.get_system_user_without_cache()
+
+    @property
+    def cache_meta(self):
+        key = self.CACHE_META_KEY.format(str(self.object.id))
+        return cache.get(key) or {}
+
+    def set_cache_meta(self):
+        key = self.CACHE_META_KEY.format(str(self.object.id))
+        meta = {
+            'id': str(uuid.uuid4()),
+            'datetime': timezone.now(),
+            'object': str(self.object)
+        }
+        cache.set(key, meta, self.CACHE_TIME)
+
+    def expire_cache_meta(self):
+        key = self.CACHE_META_KEY.format(str(self.object.id))
+        cache.delete(key)
+
+    def update_cache(self):
+        assets = self.get_assets_without_cache()
+        nodes = self.get_nodes_with_assets_without_cache()
+        system_users = self.get_system_user_without_cache()
+        cache.set(self.asset_key, assets, self.CACHE_TIME)
+        cache.set(self.node_key, nodes, self.CACHE_TIME)
+        cache.set(self.system_key, system_users, self.CACHE_TIME)
+        self.set_cache_meta()
+
+    def expire_cache(self):
+        """
+        因为 获取用户的节点，资产，系统用户等都能会缓存，这里会清理所有与该对象有关的
+        缓存，以免造成不统一的情况
+        :return:
+        """
+        key = self.CACHE_KEY.format(str(self.object.id), '*')
+        cache.delete_pattern(key)
+        self.expire_cache_meta()
+
+    def expire_all_cache_meta(self):
+        key = self.CACHE_META_KEY.format('*')
+        cache.delete_pattern(key)
+
+    @classmethod
+    def expire_all_cache(cls):
+        key = cls.CACHE_KEY.format('*', '*')
+        cache.delete_pattern(key)
 
 
 def is_obj_attr_has(obj, val, attrs=("hostname", "ip", "comment")):
@@ -193,3 +303,69 @@ def sort_assets(assets, order_by='hostname', reverse=False):
     else:
         assets = sorted(assets, key=lambda asset: getattr(asset, order_by), reverse=reverse)
     return assets
+
+
+def parse_node_to_tree_node(node):
+    from . import serializers
+    name = '{} ({})'.format(node.value, node.assets_amount)
+    node_serializer = serializers.GrantedNodeSerializer(node)
+    data = {
+        'id': node.key,
+        'name': name,
+        'title': name,
+        'pId': node.parent_key,
+        'isParent': True,
+        'open': node.is_root(),
+        'meta': {
+            'node': node_serializer.data,
+            'type': 'node'
+        }
+    }
+    tree_node = TreeNode(**data)
+    return tree_node
+
+
+def parse_asset_to_tree_node(node, asset, system_users):
+    system_users_protocol_matched = [s for s in system_users if s.protocol == asset.protocol]
+    icon_skin = 'file'
+    if asset.platform.lower() == 'windows':
+        icon_skin = 'windows'
+    elif asset.platform.lower() == 'linux':
+        icon_skin = 'linux'
+    system_users = []
+    for system_user in system_users_protocol_matched:
+        system_users.append({
+            'id': system_user.id,
+            'name': system_user.name,
+            'username': system_user.username,
+            'protocol': system_user.protocol,
+            'priority': system_user.priority,
+            'login_mode': system_user.login_mode,
+            'comment': system_user.comment,
+        })
+    data = {
+        'id': str(asset.id),
+        'name': asset.hostname,
+        'title': asset.ip,
+        'pId': node.key,
+        'isParent': False,
+        'open': False,
+        'iconSkin': icon_skin,
+        'meta': {
+            'system_users': system_users,
+            'type': 'asset',
+            'asset': {
+                'id': asset.id,
+                'hostname': asset.hostname,
+                'ip': asset.ip,
+                'port': asset.port,
+                'protocol': asset.protocol,
+                'platform': asset.platform,
+                'domain': None if not asset.domain else asset.domain.id,
+                'is_active': asset.is_active,
+                'comment': asset.comment
+            },
+        }
+    }
+    tree_node = TreeNode(**data)
+    return tree_node
