@@ -3,35 +3,56 @@
 import uuid
 import json
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 from django.utils.translation import ugettext
 from django.db import models
 
-
+from terminal.utils import send_command_execution_alert_mail
+from common.utils import lazyproperty
 from orgs.models import Organization
+from orgs.mixins.models import OrgModelMixin
+from orgs.utils import current_org, tmp_to_org
 from ..ansible.runner import CommandRunner
 from ..inventory import JMSInventory
 
 
-class CommandExecution(models.Model):
+class CommandExecution(OrgModelMixin):
     id = models.UUIDField(default=uuid.uuid4, primary_key=True)
     hosts = models.ManyToManyField('assets.Asset')
     run_as = models.ForeignKey('assets.SystemUser', on_delete=models.CASCADE)
     command = models.TextField(verbose_name=_("Command"))
     _result = models.TextField(blank=True, null=True, verbose_name=_('Result'))
     user = models.ForeignKey('users.User', on_delete=models.CASCADE, null=True)
-    is_finished = models.BooleanField(default=False)
-    date_created = models.DateTimeField(auto_now_add=True)
-    date_start = models.DateTimeField(null=True)
-    date_finished = models.DateTimeField(null=True)
+    is_finished = models.BooleanField(default=False, verbose_name=_('Is finished'))
+    date_created = models.DateTimeField(auto_now_add=True, verbose_name=_('Date created'))
+    date_start = models.DateTimeField(null=True, verbose_name=_('Date start'))
+    date_finished = models.DateTimeField(null=True, verbose_name=_('Date finished'))
 
     def __str__(self):
         return self.command[:10]
 
+    def save(self, *args, **kwargs):
+        with tmp_to_org(self.run_as.org_id):
+            super().save(*args, **kwargs)
+
     @property
     def inventory(self):
-        return JMSInventory(self.hosts.all(), run_as=self.run_as.username)
+        if self.run_as.username_same_with_user:
+            username = self.user.username
+        else:
+            username = self.run_as.username
+        inv = JMSInventory(self.hosts.all(), run_as=username, system_user=self.run_as)
+        return inv
+
+    @lazyproperty
+    def run_as_display(self):
+        return str(self.run_as)
+
+    @lazyproperty
+    def user_display(self):
+        return str(self.user)
 
     @property
     def result(self):
@@ -62,15 +83,30 @@ class CommandExecution(models.Model):
         if ok:
             runner = CommandRunner(self.inventory)
             try:
-                result = runner.execute(self.command, 'all')
+                host = self.hosts.first()
+                if host and host.is_windows():
+                    shell = 'win_shell'
+                else:
+                    shell = 'shell'
+                result = runner.execute(self.command, 'all', module=shell)
                 self.result = result.results_command
+            except SoftTimeLimitExceeded as e:
+                print("Run timeout than 60s")
+                self.result = {"error": str(e)}
             except Exception as e:
                 print("Error occur: {}".format(e))
                 self.result = {"error": str(e)}
         else:
             msg = _("Command `{}` is forbidden ........").format(self.command)
             print('\033[31m' + msg + '\033[0m')
+            send_command_execution_alert_mail({
+                'input': self.command,
+                'assets': self.hosts.all(),
+                'user': str(self.user),
+                'risk_level': 5,
+            })
             self.result = {"error":  msg}
+        self.org_id = self.run_as.org_id
         self.is_finished = True
         self.date_finished = timezone.now()
         self.save()

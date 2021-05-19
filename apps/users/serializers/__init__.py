@@ -1,3 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-from .v1 import *
+from .user import *
+from .profile import *
+from .group import *
+from .realtion import *

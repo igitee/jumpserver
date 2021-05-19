@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import os
 from collections import defaultdict
 
 from ansible import constants as C
@@ -41,7 +42,11 @@ class CallbackMixin:
         super().__init__()
         if display:
             self._display = display
+
+        cols = os.environ.get("TERM_COLS", None)
         self._display.columns = 79
+        if cols and cols.isdigit():
+            self._display.columns = int(cols) - 1
 
     def display(self, msg):
         self._display.display(msg)
@@ -55,11 +60,17 @@ class CallbackMixin:
         self.results_raw[t][host][task_name] = task_result
         self.clean_result(t, host, task_name, task_result)
 
+    def close(self):
+        if hasattr(self._display, 'close'):
+            self._display.close()
+
 
 class AdHocResultCallback(CallbackMixin, CallbackModule, CMDCallBackModule):
     """
     Task result Callback
     """
+    context = None
+
     def clean_result(self, t, host, task_name, task_result):
         contacted = self.results_summary["contacted"]
         dark = self.results_summary["dark"]
@@ -118,11 +129,24 @@ class AdHocResultCallback(CallbackMixin, CallbackModule, CMDCallBackModule):
         self.gather_result("unreachable", result)
         super().v2_runner_on_unreachable(result)
 
+    def v2_runner_on_start(self, *args, **kwargs):
+        pass
+
     def display_skipped_hosts(self):
         pass
 
     def display_ok_hosts(self):
         pass
+
+    def display_failed_stderr(self):
+        pass
+
+    def set_play_context(self, context):
+        # for k, v in context._attributes.items():
+        #     print("{} ==> {}".format(k, v))
+        if self.context and isinstance(self.context, dict):
+            for k, v in self.context.items():
+                setattr(context, k, v)
 
 
 class CommandResultCallback(AdHocResultCallback):
@@ -179,6 +203,9 @@ class CommandResultCallback(AdHocResultCallback):
             result._host.get_name(),
             msg,
         ), color=C.COLOR_ERROR)
+
+    def v2_playbook_on_stats(self, stats):
+        pass
 
     def _print_task_banner(self, task):
         pass

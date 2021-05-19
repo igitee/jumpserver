@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 #
 import re
+import json
 from six import string_types
 import base64
 import os
 import time
 import hashlib
 from io import StringIO
+from itertools import chain
 
 import paramiko
 import sshpubkeys
@@ -15,6 +17,8 @@ from itsdangerous import (
     BadSignature, SignatureExpired
 )
 from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
+from django.db.models.fields.files import FileField
 
 from .http import http_date
 
@@ -51,7 +55,7 @@ class Signer(metaclass=Singleton):
         try:
             return s.loads(value)
         except BadSignature:
-            return {}
+            return None
 
     def sign_t(self, value, expires_in=3600):
         s = TimedJSONWebSignatureSerializer(self.secret_key, expires_in=expires_in)
@@ -62,7 +66,7 @@ class Signer(metaclass=Singleton):
         try:
             return s.loads(value)
         except (BadSignature, SignatureExpired):
-            return {}
+            return None
 
 
 def ssh_key_string_to_obj(text, password=None):
@@ -71,11 +75,16 @@ def ssh_key_string_to_obj(text, password=None):
         key = paramiko.RSAKey.from_private_key(StringIO(text), password=password)
     except paramiko.SSHException:
         pass
+    else:
+        return key
 
     try:
         key = paramiko.DSSKey.from_private_key(StringIO(text), password=password)
     except paramiko.SSHException:
         pass
+    else:
+        return key
+
     return key
 
 
@@ -180,5 +189,45 @@ def encrypt_password(password, salt=None):
 
 
 def get_signer():
-    signer = Signer(settings.SECRET_KEY)
-    return signer
+    s = Signer(settings.SECRET_KEY)
+    return s
+
+
+signer = get_signer()
+
+
+def ensure_last_char_is_ascii(data):
+    remain = ''
+
+
+secret_pattern = re.compile(r'password|secret|key', re.IGNORECASE)
+
+
+def model_to_dict_pro(instance, fields=None, exclude=None):
+    from ..fields.model import EncryptMixin
+    opts = instance._meta
+    data = {}
+    for f in chain(opts.concrete_fields, opts.private_fields):
+        if not getattr(f, 'editable', False):
+            continue
+        if fields and f.name not in fields:
+            continue
+        if exclude and f.name in exclude:
+            continue
+        if isinstance(f, FileField):
+            continue
+        if isinstance(f, EncryptMixin):
+            continue
+        if secret_pattern.search(f.name):
+            continue
+        value = f.value_from_object(instance)
+        data[f.name] = value
+    return data
+
+
+def model_to_json(instance, sort_keys=True, indent=2, cls=None):
+    data = model_to_dict_pro(instance)
+    if cls is None:
+        cls = DjangoJSONEncoder
+    return json.dumps(data, sort_keys=sort_keys, indent=indent, cls=cls)
+

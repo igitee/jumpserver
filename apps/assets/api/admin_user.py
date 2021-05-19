@@ -1,26 +1,14 @@
-# ~*~ coding: utf-8 ~*~
-# Copyright (C) 2014-2018 Beijing DuiZhan Technology Co.,Ltd. All Rights Reserved.
-#
-# Licensed under the GNU General Public License v2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.gnu.org/licenses/gpl-2.0.html
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
 
 from django.db import transaction
+from django.db.models import Count
 from django.shortcuts import get_object_or_404
-from rest_framework import generics
+from django.utils.translation import ugettext as _
+from rest_framework import status
 from rest_framework.response import Response
-from rest_framework_bulk import BulkModelViewSet
-from rest_framework.pagination import LimitOffsetPagination
+from orgs.mixins.api import OrgBulkModelViewSet
+from orgs.mixins import generics
 
-from common.mixins import IDInFilterMixin
 from common.utils import get_logger
 from ..hands import IsOrgAdmin
 from ..models import AdminUser, Asset
@@ -36,31 +24,42 @@ __all__ = [
 ]
 
 
-class AdminUserViewSet(IDInFilterMixin, BulkModelViewSet):
+class AdminUserViewSet(OrgBulkModelViewSet):
     """
     Admin user api set, for add,delete,update,list,retrieve resource
     """
-
-    filter_fields = ("name", "username")
-    search_fields = filter_fields
-    queryset = AdminUser.objects.all()
+    model = AdminUser
+    filterset_fields = ("name", "username")
+    search_fields = filterset_fields
     serializer_class = serializers.AdminUserSerializer
     permission_classes = (IsOrgAdmin,)
-    pagination_class = LimitOffsetPagination
+    serializer_classes = {
+        'default': serializers.AdminUserSerializer,
+        'retrieve': serializers.AdminUserDetailSerializer,
+    }
 
     def get_queryset(self):
-        queryset = super().get_queryset().all()
+        queryset = super().get_queryset()
+        queryset = queryset.annotate(assets_amount=Count('assets'))
         return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        has_related_asset = instance.assets.exists()
+        if has_related_asset:
+            data = {'msg': _('Deleted failed, There are related assets')}
+            return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminUserAuthApi(generics.UpdateAPIView):
-    queryset = AdminUser.objects.all()
+    model = AdminUser
     serializer_class = serializers.AdminUserAuthSerializer
     permission_classes = (IsOrgAdmin,)
 
 
 class ReplaceNodesAdminUserApi(generics.UpdateAPIView):
-    queryset = AdminUser.objects.all()
+    model = AdminUser
     serializer_class = serializers.ReplaceNodeAdminUserSerializer
     permission_classes = (IsOrgAdmin,)
 
@@ -85,7 +84,7 @@ class AdminUserTestConnectiveApi(generics.RetrieveAPIView):
     """
     Test asset admin user assets_connectivity
     """
-    queryset = AdminUser.objects.all()
+    model = AdminUser
     permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.TaskIDSerializer
 
@@ -98,10 +97,8 @@ class AdminUserTestConnectiveApi(generics.RetrieveAPIView):
 class AdminUserAssetsListView(generics.ListAPIView):
     permission_classes = (IsOrgAdmin,)
     serializer_class = serializers.AssetSimpleSerializer
-    pagination_class = LimitOffsetPagination
-    filter_fields = ("hostname", "ip")
-    http_method_names = ['get']
-    search_fields = filter_fields
+    filterset_fields = ("hostname", "ip")
+    search_fields = filterset_fields
 
     def get_object(self):
         pk = self.kwargs.get('pk')

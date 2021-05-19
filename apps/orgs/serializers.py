@@ -1,81 +1,143 @@
-
+from django.db.models import F
 from rest_framework.serializers import ModelSerializer
 from rest_framework import serializers
-from rest_framework_bulk import BulkListSerializer
+from django.utils.translation import ugettext_lazy as _
 
-from users.models import User, UserGroup
-from assets.models import Asset, Domain, AdminUser, SystemUser, Label
-from perms.models import AssetPermission
-from .utils import set_current_org, get_current_org
-from .models import Organization
-from .mixins import OrgMembershipSerializerMixin
+from users.models.user import User
+from common.drf.serializers import AdaptedBulkListSerializer
+from common.drf.serializers import BulkModelSerializer
+from common.db.models import concated_display as display
+from .models import Organization, OrganizationMember, ROLE
+
+
+class ResourceStatisticsSerializer(serializers.Serializer):
+    users_amount = serializers.IntegerField(required=False)
+    groups_amount = serializers.IntegerField(required=False)
+
+    assets_amount = serializers.IntegerField(required=False)
+    nodes_amount = serializers.IntegerField(required=False)
+    admin_users_amount = serializers.IntegerField(required=False)
+    system_users_amount = serializers.IntegerField(required=False)
+    domains_amount = serializers.IntegerField(required=False)
+    gateways_amount = serializers.IntegerField(required=False)
+
+    applications_amount = serializers.IntegerField(required=False)
+    asset_perms_amount = serializers.IntegerField(required=False)
+    app_perms_amount = serializers.IntegerField(required=False)
 
 
 class OrgSerializer(ModelSerializer):
+    users = serializers.PrimaryKeyRelatedField(many=True, queryset=User.objects.all(), write_only=True, required=False)
+    admins = serializers.PrimaryKeyRelatedField(many=True, queryset=User.objects.all(), write_only=True, required=False)
+    auditors = serializers.PrimaryKeyRelatedField(many=True, queryset=User.objects.all(), write_only=True, required=False)
+
+    resource_statistics = ResourceStatisticsSerializer(source='resource_statistics_cache', read_only=True)
+
     class Meta:
         model = Organization
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
+        list_serializer_class = AdaptedBulkListSerializer
+        fields_mini = ['id', 'name']
+        fields_small = fields_mini + [
+            'resource_statistics',
+            'is_default', 'is_root',
+            'date_created',
+            'comment', 'created_by',
+        ]
+
+        fields_m2m = ['users', 'admins', 'auditors']
+        fields = fields_small + fields_m2m
         read_only_fields = ['created_by', 'date_created']
 
+    def create(self, validated_data):
+        members = self._pop_members(validated_data)
+        instance = Organization.objects.create(**validated_data)
+        OrganizationMember.objects.add_users_by_role(instance, *members)
+        return instance
 
-class OrgReadSerializer(ModelSerializer):
-    admins = serializers.SlugRelatedField(slug_field='name', many=True, read_only=True)
-    users = serializers.SlugRelatedField(slug_field='name', many=True, read_only=True)
-    user_groups = serializers.SerializerMethodField()
-    assets = serializers.SerializerMethodField()
-    domains = serializers.SerializerMethodField()
-    admin_users = serializers.SerializerMethodField()
-    system_users = serializers.SerializerMethodField()
-    labels = serializers.SerializerMethodField()
-    perms = serializers.SerializerMethodField()
+    def _pop_members(self, validated_data):
+        return (
+            validated_data.pop('users', None),
+            validated_data.pop('admins', None),
+            validated_data.pop('auditors', None)
+        )
 
+    def update(self, instance, validated_data):
+        members = self._pop_members(validated_data)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        OrganizationMember.objects.set_users_by_role(instance, *members)
+        return instance
+
+
+class OrgReadSerializer(OrgSerializer):
+    pass
+
+
+class OrgMemberSerializer(BulkModelSerializer):
+    org_display = serializers.CharField(read_only=True)
+    user_display = serializers.CharField(read_only=True)
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+
+    class Meta:
+        model = OrganizationMember
+        fields_mini = ['id']
+        fields_small = fields_mini + [
+            'role', 'role_display'
+        ]
+        fields_fk = ['org', 'user', 'org_display', 'user_display',]
+        fields = fields_small + fields_fk
+        use_model_bulk_create = True
+        model_bulk_create_kwargs = {'ignore_conflicts': True}
+
+    def get_unique_together_validators(self):
+        if self.parent:
+            return []
+        return super().get_unique_together_validators()
+
+    @classmethod
+    def setup_eager_loading(cls, queryset):
+        return queryset.annotate(
+            org_display=F('org__name'),
+            user_display=display('user__name', 'user__username')
+        ).distinct()
+
+
+class OrgMemberOldBaseSerializer(BulkModelSerializer):
+    organization = serializers.PrimaryKeyRelatedField(
+        label=_('Organization'), queryset=Organization.objects.all(), required=True, source='org'
+    )
+
+    def to_internal_value(self, data):
+        view = self.context['view']
+        org_id = view.kwargs.get('org_id')
+        if org_id:
+            data['organization'] = org_id
+        return super().to_internal_value(data)
+
+    class Meta:
+        model = OrganizationMember
+        fields = ('id', 'organization', 'user', 'role')
+
+
+class OrgMemberAdminSerializer(OrgMemberOldBaseSerializer):
+    role = serializers.HiddenField(default=ROLE.ADMIN)
+
+
+class OrgMemberUserSerializer(OrgMemberOldBaseSerializer):
+    role = serializers.HiddenField(default=ROLE.USER)
+
+
+class OrgRetrieveSerializer(OrgReadSerializer):
+    admins = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    auditors = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    users = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+
+    class Meta(OrgReadSerializer.Meta):
+        pass
+
+
+class CurrentOrgSerializer(ModelSerializer):
     class Meta:
         model = Organization
-        fields = '__all__'
-
-    @staticmethod
-    def get_data_from_model(obj, model):
-        current_org = get_current_org()
-        set_current_org(Organization.root())
-        if model == Asset:
-            data = [o.hostname for o in model.objects.filter(org_id=obj.id)]
-        else:
-            data = [o.name for o in model.objects.filter(org_id=obj.id)]
-        set_current_org(current_org)
-        return data
-
-    def get_user_groups(self, obj):
-        return self.get_data_from_model(obj, UserGroup)
-
-    def get_assets(self, obj):
-        return self.get_data_from_model(obj, Asset)
-
-    def get_domains(self, obj):
-        return self.get_data_from_model(obj, Domain)
-
-    def get_admin_users(self, obj):
-        return self.get_data_from_model(obj, AdminUser)
-
-    def get_system_users(self, obj):
-        return self.get_data_from_model(obj, SystemUser)
-
-    def get_labels(self, obj):
-        return self.get_data_from_model(obj, Label)
-
-    def get_perms(self, obj):
-        return self.get_data_from_model(obj, AssetPermission)
-
-
-class OrgMembershipAdminSerializer(OrgMembershipSerializerMixin, ModelSerializer):
-    class Meta:
-        model = Organization.admins.through
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
-
-
-class OrgMembershipUserSerializer(OrgMembershipSerializerMixin, ModelSerializer):
-    class Meta:
-        model = Organization.users.through
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
+        fields = ['id', 'name', 'is_default', 'is_root', 'comment']

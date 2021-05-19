@@ -5,13 +5,13 @@ import uuid
 import time
 
 from django.core.cache import cache
-from django.conf import settings
 from django.utils.translation import ugettext as _
-from django.utils.six import text_type
+from six import text_type
 from django.contrib.auth import get_user_model
+from django.contrib.auth.backends import ModelBackend as DJModelBackend
 from rest_framework import HTTP_HEADER_ENCODING
 from rest_framework import authentication, exceptions
-from rest_framework.authentication import CSRFCheck
+from common.auth import signature
 
 from common.utils import get_object_or_none, make_signature, http_to_unixtime
 from ..models import AccessKey, PrivateToken
@@ -23,6 +23,11 @@ def get_request_date_header(request):
         # Work around django test client oddness
         date = date.encode(HTTP_HEADER_ENCODING)
     return date
+
+
+class ModelBackend(DJModelBackend):
+    def user_can_authenticate(self, user):
+        return user.is_valid
 
 
 class AccessKeyAuthentication(authentication.BaseAuthentication):
@@ -105,11 +110,14 @@ class AccessKeyAuthentication(authentication.BaseAuthentication):
             raise exceptions.AuthenticationFailed(_('User disabled.'))
         return access_key.user, None
 
+    def authenticate_header(self, request):
+        return 'Sign access_key_id:Signature'
+
 
 class AccessTokenAuthentication(authentication.BaseAuthentication):
     keyword = 'Bearer'
+    # expiration = settings.TOKEN_EXPIRATION or 3600
     model = get_user_model()
-    expiration = settings.TOKEN_EXPIRATION or 3600
 
     def authenticate(self, request):
         auth = authentication.get_authorization_header(request).split()
@@ -133,13 +141,17 @@ class AccessTokenAuthentication(authentication.BaseAuthentication):
         return self.authenticate_credentials(token)
 
     def authenticate_credentials(self, token):
+        model = get_user_model()
         user_id = cache.get(token)
-        user = get_object_or_none(self.model, id=user_id)
+        user = get_object_or_none(model, id=user_id)
 
         if not user:
             msg = _('Invalid token or cache refreshed.')
             raise exceptions.AuthenticationFailed(msg)
         return user, None
+
+    def authenticate_header(self, request):
+        return self.keyword
 
 
 class PrivateTokenAuthentication(authentication.TokenAuthentication):
@@ -147,7 +159,72 @@ class PrivateTokenAuthentication(authentication.TokenAuthentication):
 
 
 class SessionAuthentication(authentication.SessionAuthentication):
-    def enforce_csrf(self, request):
-        reason = CSRFCheck().process_view(request, None, (), {})
-        if reason:
-            raise exceptions.AuthenticationFailed(reason)
+    def authenticate(self, request):
+        """
+        Returns a `User` if the request session currently has a logged in user.
+        Otherwise returns `None`.
+        """
+
+        # Get the session-based user from the underlying HttpRequest object
+        user = getattr(request._request, 'user', None)
+
+        # Unauthenticated, CSRF validation not required
+        if not user or not user.is_active:
+            return None
+
+        try:
+            self.enforce_csrf(request)
+        except exceptions.AuthenticationFailed:
+            return None
+
+        # CSRF passed with authenticated user
+        return user, None
+
+
+class SignatureAuthentication(signature.SignatureAuthentication):
+    # The HTTP header used to pass the consumer key ID.
+
+    # A method to fetch (User instance, user_secret_string) from the
+    # consumer key ID, or None in case it is not found. Algorithm
+    # will be what the client has sent, in the case that both RSA
+    # and HMAC are supported at your site (and also for expansion).
+    model = get_user_model()
+
+    def fetch_user_data(self, key_id, algorithm="hmac-sha256"):
+        # ...
+        # example implementation:
+        try:
+            key = AccessKey.objects.get(id=key_id)
+            if not key.is_active:
+                return None, None
+            user, secret = key.user, str(key.secret)
+            return user, secret
+        except AccessKey.DoesNotExist:
+            return None, None
+
+
+class SSOAuthentication(ModelBackend):
+    """
+    什么也不做呀😺
+    """
+
+    def authenticate(self, request, sso_token=None, **kwargs):
+        pass
+
+
+class WeComAuthentication(ModelBackend):
+    """
+    什么也不做呀😺
+    """
+
+    def authenticate(self, request, **kwargs):
+        pass
+
+
+class DingTalkAuthentication(ModelBackend):
+    """
+    什么也不做呀😺
+    """
+
+    def authenticate(self, request, **kwargs):
+        pass
